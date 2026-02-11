@@ -2,44 +2,81 @@
 
 namespace Axumoss\HasabAi;
 
-use Illuminate\Support\Facades\Http;
-use Illuminate\Http\Client\Response;
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
 
 class ApiClient
 {
     protected string $baseUrl;
     protected string $token;
+    protected Client $client;
 
-    public function __construct(string $token = null, string $baseUrl = null)
+    public function __construct(?string $token = null, ?string $baseUrl = null)
     {
         $this->token = $token ?? config('hasabai.token');
-        $this->baseUrl = $baseUrl ?? config('hasabai.base_url');
+        $this->baseUrl = rtrim(trim($baseUrl ?? config('hasabai.base_url'), "'\""), '/');
+
+        $this->client = new Client([
+            'base_uri' => $this->baseUrl,
+            'headers' => [
+                'Authorization' => "Bearer {$this->token}",
+                'Content-Type' => 'application/json',
+            ],
+        ]);
     }
 
     /**
-     * Send a request to the API.
+     * Send a POST request with multipart/form-data
      *
-     * @param string $method HTTP method
-     * @param string $endpoint API endpoint
-     * @param array $data POST/GET data
-     * @param array $files Files to attach (['name' => fopen(...)])
+     * @param string $endpoint
+     * @param array $fields Key/value pairs (arrays will be JSON-encoded)
      * @return array
+     * @throws \Exception
      */
-    public function request(string $method, string $endpoint, array $data = [], array $files = []): array
+    public function postMultipart(string $endpoint, array $fields): array
     {
-        $request = Http::withToken($this->token);
+        $multipart = [];
 
-        // Attach files if present
-        foreach ($files as $name => $file) {
-            $request = $request->attach($name, $file);
+        foreach ($fields as $name => $value) {
+            $multipart[] = [
+                'name' => $name,
+                'contents' => is_array($value) ? json_encode($value) : $value,
+            ];
         }
 
-        $response = $request->{$method}("{$this->baseUrl}/{$endpoint}", $data);
+        try {
+            $response = $this->client->request('POST', $endpoint, [
+                'multipart' => $multipart,
+            ]);
 
-        if ($response->failed()) {
-            throw new \Exception("API request failed: ".$response->body());
+            $body = $response->getBody()->getContents();
+            $decoded = json_decode($body, true);
+
+            return $decoded ?? ($body ? ['_content' => $body] : []);
+        } catch (RequestException $e) {
+            $message = $e->hasResponse()
+                ? $e->getResponse()->getBody()->getContents()
+                : $e->getMessage();
+            throw new \Exception("API request failed: {$message}");
         }
+    }
 
-        return $response->json();
+    /**
+     * Generic request (GET, POST, etc.) if needed
+     */
+    public function request(string $method, string $endpoint, array $options = []): array
+    {
+        try {
+            $response = $this->client->request(strtoupper($method), $endpoint, $options);
+            $body = $response->getBody()->getContents();
+            $decoded = json_decode($body, true);
+
+            return $decoded ?? ($body ? ['_content' => $body] : []);
+        } catch (RequestException $e) {
+            $message = $e->hasResponse()
+                ? $e->getResponse()->getBody()->getContents()
+                : $e->getMessage();
+            throw new \Exception("API request failed: {$message}");
+        }
     }
 }
